@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KMeans Clustering Algorithm</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+</head>
+<body>
+    <h1>KMeans Clustering Algorithm</h1>
+    
+    <!-- Drop-down menu for initialization method -->
+    <form id="cluster-form">
+        <label for="k">Number of Clusters (k):</label>
+        <input type="number" id="k" name="k" value="3" min="1" max="10">
+        <label for="method">Initialization Method:</label>
+        <select id="method" name="method">
+            <option value="random">Random</option>
+            <option value="farthest_first">Farthest First</option>
+            <option value="kmeans++">KMeans++</option>
+            <option value="manual">Manual</option> <!-- Added Manual Option -->
+        </select>
+    </form>
+
+    <!-- Control buttons -->
+    <button type="button" id="generate-dataset">Generate New Dataset</button>
+    <button type="button" id="step-clustering">Step Through KMeans</button>
+    <button type="button" id="run-convergence">Run to Convergence</button>
+    <button type="button" id="reset-algorithm">Reset Algorithm</button>
+
+    <!-- Plot to visualize the clusters -->
+    <div id="plot" style="width:800px;height:600px;"></div>
+
+    <!-- Optional: Status display for centroid selection -->
+    <div id="status"></div>
+
+    <script>
+        let data = null; // Store dataset across steps
+        let currentStep = 0;
+        let converged = false; // Track if KMeans has converged
+        let manualCentroids = []; // Store manually selected centroids
+        let selectingCentroids = false; // Flag to indicate if user is selecting centroids
+
+        // Function to render the plot
+        function renderPlot(centroids = [], clusters = [], showOnlyData = false) {
+            const traces = [];
+
+            if (showOnlyData) {
+                traces.push({
+                    x: data.map(p => p[0]),
+                    y: data.map(p => p[1]),
+                    mode: 'markers',
+                    type: 'scatter',
+                    name: 'Data Points'
+                });
+            } else {
+                for (let i = 0; i < centroids.length; i++) {
+                    const clusterPoints = data.filter((_, index) => clusters[index] == i);
+                    traces.push({
+                        x: clusterPoints.map(p => p[0]),
+                        y: clusterPoints.map(p => p[1]),
+                        mode: 'markers',
+                        type: 'scatter',
+                        name: `Cluster ${i + 1}`
+                    });
+                }
+                if (centroids.length > 0) {
+                    traces.push({
+                        x: centroids.map(c => c[0]),
+                        y: centroids.map(c => c[1]),
+                        mode: 'markers',
+                        marker: { color: 'black', size: 12, symbol: 'cross' },
+                        type: 'scatter',
+                        name: 'Centroids'
+                    });
+                }
+            }
+
+            Plotly.newPlot('plot', traces, {responsive: true});
+
+            // If manual centroids are being selected, enable general click event
+            if (document.getElementById('method').value === 'manual' && selectingCentroids) {
+                const plot = document.getElementById('plot');
+                plot.addEventListener('click', handlePlotClick);
+            }
+        }
+
+        // Function to handle general plot clicks for manual centroid selection
+        function handlePlotClick(event) {
+            if (!selectingCentroids) return;
+
+            const plot = document.getElementById('plot');
+            const xaxis = plot._fullLayout.xaxis;
+            const yaxis = plot._fullLayout.yaxis;
+            const bbox = plot.getBoundingClientRect();
+
+            // Calculate mouse position relative to the plot
+            const xpixel = event.clientX - bbox.left;
+            const ypixel = event.clientY - bbox.top;
+
+            // Get axis ranges
+            const xrange = xaxis.range;
+            const yrange = yaxis.range;
+
+            // Map pixel position to data coordinates
+            const x = xrange[0] + (xpixel / bbox.width) * (xrange[1] - xrange[0]);
+            const y = yrange[1] - (ypixel / bbox.height) * (yrange[1] - yrange[0]); // Invert y-axis
+
+            // Add the centroid to the list
+            manualCentroids.push([x, y]);
+
+            // Highlight the selected centroid with a red star
+            Plotly.addTraces('plot', {
+                x: [x],
+                y: [y],
+                mode: 'markers',
+                marker: { color: 'red', size: 12, symbol: 'star' },
+                type: 'scatter',
+                name: `Manual Centroid ${manualCentroids.length}`
+            });
+
+            const k = parseInt(document.getElementById('k').value);
+            updateStatus(k);
+            if (manualCentroids.length === k) {
+                selectingCentroids = false;
+                alert(`${k} centroids have been selected.`);
+                // Remove the event listener to prevent further clicks
+                plot.removeEventListener('click', handlePlotClick);
+                // Send manual centroids to the backend
+                setManualCentroids();
+            }
+        }
+
+        // Function to update the status display
+        function updateStatus(k) {
+            document.getElementById('status').innerText = `Selected ${manualCentroids.length} of ${k} centroids.`;
+        }
+
+        // Function to set manual centroids on the backend
+        function setManualCentroids() {
+            const formData = new FormData();
+            formData.append('k', document.getElementById('k').value);
+            formData.append('method', 'manual');
+            formData.append('centroids', JSON.stringify(manualCentroids));
+
+            fetch('/set-manual-centroids', {
+                method: 'POST',
+                body: formData
+            }).then(response => response.json())
+            .then(result => {
+                if (result.success) {
+                    alert('Manual centroids have been set successfully!');
+                } else {
+                    alert('Error setting manual centroids: ' + result.error);
+                }
+            });
+        }
+
+        // Fetch new dataset
+        document.getElementById('generate-dataset').onclick = function() {
+            fetch('/new-dataset')
+            .then(response => response.json())
+            .then(result => {
+                data = result.data;
+                currentStep = 0; // Reset the step counter
+                converged = false; // Reset convergence flag
+                manualCentroids = []; // Reset manual centroids
+
+                const method = document.getElementById('method').value;
+                if (method === 'manual') {
+                    selectingCentroids = true; // Enable centroid selection
+                    alert(`New dataset generated! Please click ${document.getElementById('k').value} points on the plot to set initial centroids.`);
+                } else {
+                    selectingCentroids = false; // Disable centroid selection
+                    alert('New dataset generated!');
+                }
+
+                renderPlot([], [], true); // Immediately show the dataset
+                updateStatus(0);
+            });
+        };
+
+        // Step through KMeans
+        document.getElementById('step-clustering').onclick = function() {
+            if (data === null) {
+                alert("Please generate a dataset first!");
+                return;
+            }
+            if (document.getElementById('method').value === 'manual' && manualCentroids.length === 0) {
+                alert("Please select manual centroids first.");
+                return;
+            }
+            if (converged) {
+                alert("KMeans has already converged!");
+                return;
+            }
+
+            const formData = new FormData(document.getElementById('cluster-form'));
+            fetch('/step', {
+                method: 'POST',
+                body: formData
+            }).then(response => response.json())
+            .then(result => {
+                if (result.error) {
+                    alert(result.error);
+                    return;
+                }
+                if (result.converged) {
+                    converged = true;
+                    alert("KMeans has converged!");
+                    renderPlot(result.centroids, result.clusters);
+                } else {
+                    const { centroids, clusters } = result;
+                    renderPlot(centroids, clusters);
+                    currentStep += 1; // Increment step count
+                }
+            });
+        };
+
+        // Run KMeans to convergence
+        document.getElementById('run-convergence').onclick = function() {
+            if (data === null) {
+                alert("Please generate a dataset first!");
+                return;
+            }
+            if (document.getElementById('method').value === 'manual' && manualCentroids.length === 0) {
+                alert("Please select manual centroids first.");
+                return;
+            }
+            if (converged) {
+                alert("KMeans has already converged!");
+                return; // Prevent running it again if already converged
+            }
+
+            const formData = new FormData(document.getElementById('cluster-form'));
+            fetch('/convergence', {
+                method: 'POST',
+                body: formData
+            }).then(response => response.json())
+            .then(result => {
+                if (result.error) {
+                    alert(result.error);
+                    return;
+                }
+                const { centroids, clusters } = result;
+                renderPlot(centroids, clusters);
+                converged = true; // Set the converged flag
+                currentStep = 0; // Reset step count after convergence
+                alert("KMeans has converged!");
+            });
+        };
+
+        // Reset algorithm
+        document.getElementById('reset-algorithm').onclick = function() {
+            data = null;
+            currentStep = 0;
+            converged = false; // Reset convergence flag
+            manualCentroids = []; // Reset manual centroids
+            selectingCentroids = false; // Reset selection flag
+            Plotly.purge('plot'); // Clear the plot
+            document.getElementById('status').innerText = ''; // Clear status
+            alert('Algorithm reset. Please generate a new dataset.');
+        };
+
+        // Handle initialization method change
+        document.getElementById('method').onchange = function() {
+            const method = this.value;
+            if (method === 'manual') {
+                const k = parseInt(document.getElementById('k').value);
+                alert(`Please click ${k} points on the plot to set initial centroids.`);
+                selectingCentroids = true;
+                manualCentroids = []; // Reset any previous manual centroids
+                document.getElementById('status').innerText = ''; // Reset status
+                // Clear existing centroids from the plot
+                if (data !== null) {
+                    renderPlot([], [], true);
+                }
+            } else {
+                selectingCentroids = false;
+                manualCentroids = [];
+                document.getElementById('status').innerText = ''; // Reset status
+                // Remove any manual centroid markers from the plot
+                if (data !== null) {
+                    renderPlot([], [], true);
+                }
+            }
+        };
+    </script>
+</body>
+</html>
